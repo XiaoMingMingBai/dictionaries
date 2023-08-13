@@ -1,201 +1,276 @@
-#include "../include/server.h"
+#include<stdio.h>
+#include<sys/socket.h>
+#include<sqlite3.h>
+#include<strings.h>
+#include<netinet/in.h>
+#include<string.h>
+#include<stdlib.h>
+#include<time.h>
+#include<unistd.h>
+#include<arpa/inet.h>
 
-void handler(int sig)
+#define N 20
+#define SIZE 256
+#define R 1
+#define L 2
+#define H 3
+#define Q 4
+
+typedef struct
 {
-    wait(NULL);
+	int type;
+	char name[N];
+	char data[SIZE];
+}msg_t;
+
+sqlite3 *db;
+
+void do_register(int connfd,msg_t *pbuf)	//注册功能	R
+{
+	char *errmsg,**result;
+	int nrow=0,ncolumn;
+	char sql[512]={0};
+	sprintf (sql, "select * from usr where usr_name = '%s';",pbuf->name);
+
+	if( sqlite3_get_table(db,sql,&result,&nrow,&ncolumn,&errmsg) != SQLITE_OK)
+	{
+		printf("error:%s\n",errmsg);
+		exit(-1);
+	}
+	if(nrow > 0) 		//注册的用户名已经存在
+	{
+		sprintf(pbuf->data,"\n      用户名已经存在，请重新注册(̿▀̿ ̿Ĺ̯̿̿▀̿ ̿)\n");
+		send(connfd, pbuf, sizeof(msg_t), 0);
+	}
+	else       			//用户名不存在，可以注册
+	{
+		sprintf(sql,"insert into usr values ('%s','%s');",pbuf->name,pbuf->data);
+		if(sqlite3_exec(db,sql,NULL,NULL,&errmsg) != SQLITE_OK)
+		{
+			perror("sqlite3_exec");
+			printf("error:%s\n",errmsg);
+			exit(-1);
+		}
+		sprintf(pbuf->data,"\n     %s,恭喜您,注册成功(｡･ω･｡)ﾉ♡",pbuf->name);	//返回注册成功信息给用户
+		send(connfd,pbuf,sizeof(msg_t),0);
+	}
 }
 
-void do_client(int connectfd, sqlite3 *db)
+void do_login(int connfd,msg_t *pbuf)		//登录	L
 {
-    MSG msg;
-    while (recv(connectfd, &msg, sizeof(MSG), 0) > 0) // receive request
-    {
-        printf("type = %d\n", msg.type);
-        printf("type = %s\n", msg.data);
-        switch (msg.type)
-        {
-        case R:
-            do_register(connectfd, &msg, db);
-            break;
-        case L:
-            do_login(connectfd, &msg, db);
-            break;
-        case Q:
-            do_query(connectfd, &msg, db);
-            break;
-        case H:
-            do_history(connectfd, &msg, db);
-            break;
-        }
-    }
-    printf("client quit\n");
-    exit(0);
-    return;
+	char *errmsg;
+	char sql[512]={0};
+	int nrow=0,ncolumn=0;
+	char **result;
+
+	sprintf(sql,"select * from usr where usr_name = '%s' and usr_pwd = '%s';",pbuf->name,pbuf->data);
+	if(sqlite3_get_table(db, sql,&result,&nrow,&ncolumn, &errmsg) != SQLITE_OK)
+	{
+		perror("sqlite3_get_table");
+		printf("error:%s\n",sqlite3_errmsg(db));
+		exit(-1);
+	}
+	if(nrow > 0)
+	{
+		sprintf(pbuf->data,"\n      %s,恭喜您,登录成功(｡･ω･｡)ﾉ♡\n",pbuf->name);
+		pbuf->type = 8;
+	}
+	else
+	{
+		sprintf(pbuf->data,"\n  \033[1;31m用户名或密码错误,请重新输入o(#￣▽￣)==O))￣0￣\")o金钢飞拳~!!\033[0m\n");
+	}
+	send(connfd,pbuf,sizeof(msg_t),0);
+	//sqlite3_free_table(result);
+
 }
 
-void do_register(int connectfd, MSG *msg, sqlite3 *db)
+//获取系统时间
+char get_date(char *date)
 {
-    char sqlstr[512] = {0};
-    char *errmsg;
-
-    // 使用sqlite3_exec函数调用插入函数判断是否能够插入成功
-    // 由于用户名设置为主键，所以如果用户名已经存在就会报错
-    sprintf(sqlstr, "insert into usr values('%s', '%s')", msg->name, msg->data);
-    if (sqlite3_exec(db, sqlstr, NULL, NULL, &errmsg) != SQLITE_OK)
-    {
-        sprintf(msg->data, "user %s already exist!!!", msg->name);
-    }
-    else
-    {
-        strcpy(msg->data, "OK");
-    }
-
-    send(connectfd, msg, sizeof(MSG), 0);
-
-    return;
+	struct tm *tp = NULL;
+	time_t rawtime;
+	time(&rawtime);
+	tp = localtime(&rawtime);
+	sprintf(date,"%02d-%02d-%02d %02d:%02d:%02d",tp->tm_year+1900,tp->tm_mon+1,    \
+			tp->tm_mday,tp->tm_hour,tp->tm_min,tp->tm_sec);
 }
 
-void do_login(int connectfd, MSG *msg, sqlite3 *db)
+void do_query(int connfd,msg_t *pbuf)	//请求	Q
 {
-    char sqlstr[512] = {0};
-    char *errmsg, **result;
-    int nrow, ncolumn;
+	int ret;
+	char line[200];	//用来保存读取的单词及解释
+	char time[100];	//用来保存系统时间
+	char *errmsg;
+	char sql[512]={0};
+	char word[200];
+	strcpy(word,pbuf->data);
+	int len = strlen(word);
+	char *p = line + len;
+	FILE * fp = fopen ("./dict.txt","r");
+	if(fp == NULL)
+	{
+		perror("fopen failed");
+		sprintf(pbuf->data,"抱歉,服务器打开词典文本失败 :(\n");
+		send(connfd,pbuf,sizeof(msg_t),0);
+		exit(-1);
+	}
 
-    // 通过sqlite3_get_table函数查询记录是否存在
-    sprintf(sqlstr, "select * from usr where name = '%s' and pass = '%s'", msg->name, msg->data);
-    if (sqlite3_get_table(db, sqlstr, &result, &nrow, &ncolumn, &errmsg) != SQLITE_OK)
-    {
-        printf("error : %s\n", errmsg);
-    }
-    ////通过通过nrow参数判断是否能够查询到疾记录，如果值为0，则查询不到，如果值为非0，则查询到
-    if (nrow == 0)
-    {
-        strcpy(msg->data, "name or password is wrony!!!");
-    }
-    else
-    {
-        strncpy(msg->data, "OK", 256);
-    }
+	while( fgets(line ,sizeof(line), fp) != NULL )
+	{
+		ret = strncmp(line,word,len);		
+		if(ret == 0 && line[len] == ' ' )		//跳过单词及空格，直接定位到单词解释
+		{
+			while(*p == ' ')
+				p++;
+			strcpy(pbuf->data,p);
+			send(connfd,pbuf,sizeof(msg_t),0);
+			get_date(time);
 
-    send(connectfd, msg, sizeof(MSG), 0);
-
-    return;
+			//将查找过的单词信息写进历史记录表中以备客户历史查找请求
+			sprintf(sql,"insert into history_word values('%s','%s','%s');",pbuf->name,time,word);
+			if(sqlite3_exec(db,sql,NULL,NULL,&errmsg)!=SQLITE_OK)
+			{
+				perror("sqlite3_exec");
+				printf("error:%s\n",errmsg);
+				exit(-1);
+			}
+			fclose(fp);
+			return (void)0;
+		}
+		else if(ret < 0)     
+			continue;
+		else   //遍历到对应单词位置仍未查到，不用再继续查找，跳出循环
+			break;
+	}
+	sprintf(pbuf->data,"抱歉，没有找到该单词的意思(⍥(⍥(⍥(⍥(⍥;;) 惊呆惹\n");
+	send(connfd,pbuf,sizeof(msg_t),0);
+	fclose(fp);
+}
+//回调函数，每找到一条记录就执行一次该函数
+int history_callback(void* arg, int f_column,char **f_value,char ** f_name)
+{
+	int i,connfd = *(int *)arg;
+	msg_t pbuf;
+	sprintf(pbuf.data,"%s , %s",f_value[1],f_value[2]);
+	send(connfd,&pbuf,sizeof(pbuf),0);
+	return 0;
 }
 
-void do_query(int connectfd, MSG *msg, sqlite3 *db)
+int do_history(int connfd, msg_t *pbuf)	//历史查找	H
 {
+	char sqlstr[128]={0};
+	char *errmsg;
 
-    char sqlstr[512], *errmsg;
-    int found = 0;
-    char date[128], word[128];
-
-    strcpy(word, msg->data);
-
-    // 通过found保存查询结果
-    found = do_searchword(connectfd, msg);
-
-    // 如果执行成功，还需要保存历史记录
-    if (found == 1)
-    {
-        // 获取时间
-        getdata(date);
-        // 通过sqlite3_exec函数插入数据
-        sprintf(sqlstr, "insert into record values('%s', '%s', '%s')", msg->name, date, word);
-        if (sqlite3_exec(db, sqlstr, NULL, NULL, &errmsg) != SQLITE_OK)
-        {
-            printf("error : %s\n", errmsg);
-        }
-    }
-
-    send(connectfd, msg, sizeof(MSG), 0);
-
-    return;
+	sprintf(sqlstr,"select * from history_word where usr_name = '%s';",pbuf->name);
+	if(sqlite3_exec(db,sqlstr,history_callback,(void *)&connfd,&errmsg) != SQLITE_OK)
+	{
+		printf("error:%s\n",errmsg);
+		return -1;
+	}
+	else
+		printf("请求成功.\n");
+	pbuf->data[0] = '0';
+	send(connfd,pbuf,sizeof(msg_t),0);
+	return 1;
 }
 
-int do_searchword(int connectfd, MSG *msg)
+//TCP	
+int main(int argc, char *argv[])
 {
-    FILE *fp;
-    char temp[300];
-    char *p;
-    int len, result;
-    // 保存单词的长度
-    len = strlen(msg->data);
-    // 打开保存单词的文件
-    if ((fp = fopen("dict.txt", "r")) == NULL)
-    {
-        strcpy(msg->data, "dict can not open");
-        send(connectfd, msg, sizeof(MSG), 0);
-    }
-    // printf("query word is %s len = %d\n", msg->data, len);
+	//参数1：./a.out  2：ip地址 3：端口
+	if(argc<3)
+	{
+		printf("%s <ip> <port>\n",argv[0]);
+		return -1;
+	}
+	//打开.db文件
+	if((sqlite3_open("file.db",&db))<0)
+	{
+		perror("sqlite3_open");
+		return -1;
+	}
+	//创建usr表保存用户名和密码
+	char *errmsg;
 
-    // 每次读取一行内容
-    int flags = 0;
-    while (fgets(temp, 300, fp) != NULL)
-    {
-        // 比较单词
-        result = strncmp(msg->data, temp, len);
+	//创建套接字描述符  
+	int lisenfd = socket(AF_INET,SOCK_STREAM,0);
+	if(lisenfd < 0)
+	{
+		perror("socket");
+		return -1;
+	}
+	//绑定
+	struct  sockaddr_in serveraddr,clientaddr;
+	int peerlen = sizeof(struct sockaddr);
+	bzero(&serveraddr,sizeof(serveraddr));
+	serveraddr.sin_family = AF_INET;
+	serveraddr.sin_port = htons(atoi(argv[2]));
+	serveraddr.sin_addr.s_addr = inet_addr(argv[1]);
+	
+	if(bind(lisenfd,(struct sockaddr *)&serveraddr,sizeof(serveraddr)) < 0 )
+	{
+		perror("bind");
+		return -1;
+	}
+	
+	//监听
+	if(listen(lisenfd,10) < 0)
+	{
+		perror("listen");
+		return -1;
+	}
 
-        if (result == 0 && temp[len] == ' ')
-        {
-            // p保存单词后面第一个空格的首地址
-            p = temp + len;
-
-            ////移动移动pp，让，让pp保存解释的第一个字符的首地址 保存解释的第一个字符的首地址
-            while (*p == ' ')
-            {
-                p++;
-            }
-
-            // 将解释保存在data里面
-            memcpy(msg->data, p, strlen(p));
-
-            fclose(fp);
-            return 1;
-        }
-    }
-
-    strcpy(msg->data, "not found");
-    fclose(fp);
-    return 0;
-}
-
-void getdata(char *data)
-{
-    time_t t;
-    struct tm *tp;
-
-    time(&t);
-    tp = localtime(&t);
-    sprintf(data, "%d-%d-%d %d:%d:%d", 1900 + tp->tm_year, 1 + tp->tm_mon, tp->tm_mday,
-            tp->tm_hour, tp->tm_min, tp->tm_sec);
-}
-
-void do_history(int connectfd, MSG *msg, sqlite3 *db)
-{
-    char sqlstr[128], *errmsg;
-
-    // 查询历史表
-    sprintf(sqlstr, "select * from record where name = '%s'", msg->name);
-    if (sqlite3_exec(db, sqlstr, history_callback, (void *)&connectfd, &errmsg) != SQLITE_OK)
-    {
-        printf("error : %s\n", errmsg);
-        sqlite3_free(errmsg);
-    }
-
-    // 发送结束标志
-    strcpy(msg->data, "**OVER**");
-    send(connectfd, msg, sizeof(MSG), 0);
-
-    return;
-}
-
-// 通过回调函数发送时间和单词
-int history_callback(void *arg, int f_num, char **f_value, char **f_name)
-{
-    int connectfd;
-    MSG msg;
-    connectfd = *(int *)arg;
-    sprintf(msg.data, "%s : %s", f_value[1], f_value[2]);
-    send(connectfd, &msg, sizeof(msg), 0);
-    return 0;
+	msg_t buf;
+	while(1)
+	{
+		//创建新的套接字描述符
+		int connfd = accept(lisenfd,(struct sockaddr *)&serveraddr,&peerlen);
+		if(connfd < 0)
+		{
+			perror("accept");
+			return -1;
+		}
+		//创建子进程
+		pid_t pid = fork();
+		if( pid < 0 )
+		{
+			perror("fork");
+			return -1;
+		}
+		else if(pid == 0)		//子进程
+		{
+			while(1)
+			{
+				if(recv(connfd,&buf,sizeof(buf),0)>0)
+				{	
+					printf("recv:%d:%s %s\n",buf.type,buf.name,buf.data);
+					switch(buf.type)
+					{
+					case R: 
+						do_register(connfd,&buf);
+						break;
+					case L:
+						do_login(connfd,&buf);
+						break;
+					case Q: 
+						do_query(connfd,&buf);
+						break;
+					case H: 
+						do_history(connfd,&buf);
+						break;
+					default:
+						break;
+					}
+				}
+				else
+				{
+					perror("recv failed");
+					exit(-1);
+				}
+			}
+		}
+		else                    //父进程退出
+			close(connfd);
+	}
+	return 0;
 }

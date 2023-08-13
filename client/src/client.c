@@ -1,92 +1,197 @@
-#include "../include/client.h"
+#include<stdio.h>
+#include<string.h>
+#include<unistd.h>
+#include<strings.h>
+#include<stdlib.h>
 
-void do_register(int socketfd, MSG *msg)
+#include<sys/types.h>
+#include<arpa/inet.h>
+#include<sys/socket.h>
+#include<netinet/in.h>
+
+#define N 20
+#define SIZE 256
+#define R 1
+#define L 2
+#define H 3
+#define Q 4
+
+typedef struct
 {
-    // 指定操作码
-    msg->type = R;
-    // 输入用户名
-    printf("input your name:");
-    scanf("%s", msg->name);
-    // 输入密码
-    printf("input your password:");
-    scanf("%s", msg->data);
-    // 发送数据
-    send(socketfd, msg, sizeof(MSG), 0);
-    // 接收数据并输出
-    recv(socketfd, msg, sizeof(MSG), 0);
-    printf("register : %s\n", msg->data);
+	int type;
+	char name[N];
+	char data[SIZE];
+}MSG;
+//用户注册
+void do_register(int sockfd,MSG *pbuf)
+{
+	pbuf->type = R;
+	printf("用户名:");
+	scanf("%s",pbuf->name);
+	printf("密  码:\033[8;33m");
+	scanf("%s",pbuf->data);
 
-    return;
+	send(sockfd,pbuf,sizeof(MSG),0);
+	recv(sockfd,pbuf,sizeof(MSG),0);
+	printf("\033[0m %s\n",pbuf->data);
+	sleep(1);
+}
+//用户登录
+int do_login(int sockfd,MSG *pbuf)
+{
+	pbuf->type = L;
+	printf("用户名:");
+	scanf("%s",pbuf->name);
+	printf("密  码:\033[8;33m");
+	scanf("%s",pbuf->data);
+	send(sockfd,pbuf,sizeof(MSG),0);
+
+	recv(sockfd,pbuf,sizeof(MSG),0);
+	if(pbuf->type == 8)
+	{	
+		printf("\033[0m %s\n",pbuf->data); 
+		sleep(1);
+		return 1;
+	}
+	else
+	{
+		printf("\033[0m %s\n",pbuf->data);
+		return 0;
+	}
 }
 
-int do_login(int socketfd, MSG *msg)
+//查找单词
+void do_query(int sockfd,MSG *pbuf)
 {
-    // 设置操作码
-    msg->type = L;
-    // 输入用户名
-    printf("input your name:");
-    scanf("%s", msg->name);
-    // 输入密码
-    printf("input your password:");
-    scanf("%s", msg->data);
-    // 发送数据给服务器
-    send(socketfd, msg, sizeof(MSG), 0);
-    // 接收服务器发送的数据
-    recv(socketfd, msg, sizeof(MSG), 0);
+	pbuf->type = Q;
+	printf("请输入你要查询的单词(#结束):");
+	while(1)
+	{
+		scanf("%s",pbuf->data);
+		getchar();
+		if(strcmp(pbuf->data,"#")==0)
+			break;
+		send(sockfd,pbuf,sizeof(MSG),0);
 
-    // 判断是否登录成功
-    if (strncmp(msg->data, "OK", 3) == 0)
-    { //用3可以防止OK和OKkshdfkj
-        // 登录成功返回1
-        printf("login : OK\n");
-        return 1;
-    }
+		recv(sockfd,pbuf,sizeof(MSG),0);
 
-    // 登录失败返回0
-    printf("login : %s\n", msg->data);
-    return 0;
+		printf("╭( ′• o •′ )╭☞就是这个意思：%s\n",pbuf->data);
+		sleep(1);
+		printf("请输入你要查询的单词:");
+	}
 }
 
-void do_query(int socketfd, MSG *msg)
+//查询历史单词
+void do_history(int sockfd,MSG *pbuf)
 {
-    msg->type = Q;
-    puts("-----------------------------");
-
-    while (1)
-    {
-        printf("input word (if # is end): ");
-        scanf("%s", msg->data);
-
-        // 如果输入的是#，返回上一级
-        if (strcmp(msg->data, "#") == 0)
-        {
-            break;
-        }
-
-        send(socketfd, msg, sizeof(MSG), 0);
-
-        recv(socketfd, msg, sizeof(MSG), 0);
-        printf(">>> %s\n", msg->data);
-    }
-    return;
+	pbuf->type = H;
+	send(sockfd,pbuf,sizeof(MSG),0);
+	while(1)
+	{
+		recv(sockfd,pbuf,sizeof(MSG),0);
+		if(pbuf->data[0] == '0')		//历史单词全部接受完成
+			break;
+		printf("%s\n",pbuf->data);
+	}
+	sleep(0.2);
 }
 
-void do_history(int socketfd, MSG *msg)
+//二级菜单
+void menu_2(int sockfd,MSG *pbuf)
 {
-    msg->type = H;
-    send(socketfd, msg, sizeof(MSG), 0);
+	while(1)
+	{
+		printf("\033[1;33m****************************************\n");//字体格式设置
+		printf("*            欢迎使用电子词典          *\n");
+		printf("****************************************\n");
+		printf("*  1:查询单词  2:查询历史单词  3:退出  *\n");
+		printf("****************************************\033[0m\n");//字体格式设置关闭
+		printf("请选择:");
+		scanf("%d",&pbuf->type);
+		switch(pbuf->type)
+		{
+			case 1: 
+				do_query(sockfd,pbuf);
+				break;
+			case 2:
+				do_history(sockfd,pbuf);
+				break;
+			case 3:
+				printf("      即将退出，欢迎您再次使用(￣o￣) . z Z\n");
+				send(sockfd,pbuf,sizeof(MSG),0);
+				sleep(1);
+				close(sockfd);
+				exit(-1);
+			default:
+				printf("\033[1;31m错误选项!\033[0m");
+				break;
+		}
+	}
+}
 
-    while (1)
-    {
-        recv(socketfd, msg, sizeof(MSG), 0);
+//一级菜单
+void menu_1(int sockfd,MSG *pbuf)
+{
+	int mode;
+	while(1)
+	{
+		printf("\033[1;36m****************************************\n");
+		printf("*              电子词典项目            *\n");
+		printf("****************************************\n");
+		printf("*     1: 注册   2: 登录   3: 退出      *\n");
+		printf("****************************************\033[0m\n");
+		printf("请选择:");
+		scanf("%d",&mode);
 
-        if (strcmp(msg->data, "**OVER**") == 0)
-        {
-            break;
-        }
+		switch(mode)
+		{
+		case 1: 
+			do_register(sockfd,pbuf);
+			break;
+		case 2:
+			while(do_login(sockfd,pbuf) != 1)
+				continue;
+			menu_2(sockfd,pbuf);
+			break;
+		case 3:
+			printf("      即将退出，欢迎您再次使用(￣o￣) . z Z\n");
+			sleep(1);
+			close(sockfd);
+			exit(-1);
+		default:
+				printf("\033[1;31m错误选项!\033[0m");
+				break;
+		}
+	}
+}
 
-        printf("%s\n", msg->data);
-    }
+int main(int argc, const char *argv[])
+{
+	if ( argc != 3 )
+	{
+		printf("%s <ip> <port>\n",argv[0]);
+		return -1;
+	}
+	
+	int sockfd;
+	if(( sockfd = socket(AF_INET, SOCK_STREAM, 0))<0)
+	{
+		perror("socket");
+		return -1;
+	}
 
-    return;
+	struct sockaddr_in serveraddr;
+	serveraddr.sin_family = AF_INET;
+	serveraddr.sin_port = htons(atoi(argv[2]));
+	serveraddr.sin_addr.s_addr = inet_addr(argv[1]);
+	
+	if( connect(sockfd, (struct sockaddr *)&serveraddr,sizeof(struct sockaddr)) < 0 )
+	{
+		perror("connect");
+		return -1;
+	}
+	//与服务器连接完成后，进入功能模式选择菜单界面
+	MSG buf;
+	menu_1(sockfd,&buf);
+	return 0;
 }
