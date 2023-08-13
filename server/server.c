@@ -8,6 +8,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 #define DATABASE "./data/file.db"
 #define DICT "./data/dict.txt"
@@ -175,6 +177,11 @@ int do_history(int connfd, msg_t *pbuf) // 历史查找	H
 	return 1;
 }
 
+void handler(int signo)
+{
+	wait(NULL);
+}
+
 // TCP
 int main(int argc, char *argv[])
 {
@@ -220,6 +227,9 @@ int main(int argc, char *argv[])
 		perror("listen");
 		return -1;
 	}
+
+	// 处理僵尸进程
+	signal(SIGCHLD, handler);
 
 	msg_t buf;
 	while (1)
