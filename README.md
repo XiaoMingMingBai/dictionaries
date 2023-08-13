@@ -23,12 +23,17 @@ touch dict.txt
 # abacus           n.frame with beads that slide along parallel #rods, used for teaching numbers to children, and (in some countries) for counting
 # abandon          v.  go away from (a person or thing or place) not intending to return; forsake; desert
 # abandonment      n.  abandoning
+# .....
 ```
-### 3. 运行服务端
+### 3. 编译
+```shell
+make
+```
+### 4. 运行服务端
 ```shell
 ./ser IP PORT
 ```
-### 4. 运行客户端
+### 5. 运行客户端
 ```shell
 ./cli IP PORT
 ```
